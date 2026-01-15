@@ -14,7 +14,7 @@ The training pipeline uses:
 
 | Environment | Docker Image | Description |
 |-------------|--------------|-------------|
-| OpenSpiel | affinefoundation/game:openspiel | Strategic board/card games |
+| Game | affinefoundation/game:openspiel | Strategic board/card games |
 | Trace | affinefoundation/trace:latest | Code execution prediction |
 
 ## Why Reinforcement Learning?
@@ -38,9 +38,9 @@ Key hyperparameters: learning_rate=1e-5, cliprange=0.2, ppo_epochs=4
 | VRAM Required | 24+ GB | 8-10 GB |
 | Checkpoint Size | 6+ GB | ~50 MB |
 
-## OpenSpiel Games
+## Games
 
-Supported: Goofspiel, Liars Dice, Leduc Poker, Gin Rummy, Othello, Backgammon, Hex, Clobber
+Supported: Goofspiel, Liars Dice, Leduc Poker, Gin Rummy, Othello, Backgammon, Hex, Clobber etc ...
 
 Task ID format: GGGGCCCCCCCC (game index + config variant)
 
