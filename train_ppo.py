@@ -464,7 +464,15 @@ class GamePPOTrainer:
         
         self.logger.info(f"Collecting {batch_size} samples via affinetes ({self.env_type})...")
         
-        for i in range(batch_size):
+        # Retry settings
+        max_attempts = batch_size * 3  # Try up to 3x to get enough samples
+        attempts = 0
+        successful_episodes = 0
+        failed_episodes = 0
+        
+        while len(rollouts["queries"]) < batch_size and attempts < max_attempts:
+            attempts += 1
+            
             # Sample task
             if self.env_type == "openspiel":
                 task_config = self.curriculum_sampler.sample_task()
@@ -483,8 +491,14 @@ class GamePPOTrainer:
                     base_url=self.vllm_base_url,
                     temperature=self.ppo_config.temperature,
                     timeout=self.env_config.get("timeout", 600),
-                    opponent=self.env_config.get("opponent", "mcts") if self.env_type == "openspiel" else None,
+                    opponent=self.env_config.get("opponent", "random") if self.env_type == "openspiel" else None,
                 )
+                
+                # Check for errors in result
+                if result.get("error"):
+                    self.logger.warning(f"Episode {attempts} returned error: {result.get('error')}")
+                    failed_episodes += 1
+                    continue
                 
                 score = float(result.get("score", 0.0))
                 success = bool(result.get("success", False))
@@ -495,35 +509,69 @@ class GamePPOTrainer:
                 
                 # Extract conversation for PPO samples
                 conversation = extra.get("conversation", [])
-                if conversation:
-                    # Build prompt from conversation history
-                    prompt_messages = [m for m in conversation if m.get("role") != "assistant"]
-                    response_text = ""
-                    for m in conversation:
-                        if m.get("role") == "assistant":
-                            response_text = m.get("content", "")
-                            break
+                
+                if not conversation:
+                    self.logger.debug(f"Episode {attempts}: No conversation in result, skipping")
+                    failed_episodes += 1
+                    continue
+                
+                # Extract all assistant responses (for multi-turn games)
+                samples_from_episode = 0
+                prompt_so_far = []
+                
+                for msg in conversation:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
                     
-                    if prompt_messages and response_text:
-                        prompt_text = _build_chat_prompt(self.tokenizer, prompt_messages)
+                    if role == "assistant" and content:
+                        # We have a prompt and response pair
+                        if prompt_so_far:
+                            prompt_text = _build_chat_prompt(self.tokenizer, prompt_so_far)
+                            response_text = content.strip()
+                            
+                            q = self.tokenizer.encode(
+                                prompt_text, return_tensors="pt",
+                                max_length=self.ppo_config.max_seq_length - self.ppo_config.max_new_tokens,
+                                truncation=True
+                            ).to(self.device)
+                            r = self.tokenizer.encode(response_text, return_tensors="pt", truncation=True).to(self.device)
+                            
+                            rollouts["queries"].append(q.squeeze(0))
+                            rollouts["responses"].append(r.squeeze(0))
+                            rollouts["rewards"].append(torch.tensor(score))
+                            rollouts["metadata"].append({"score": score, "success": success, "task_id": task_id})
+                            samples_from_episode += 1
                         
-                        q = self.tokenizer.encode(
-                            prompt_text, return_tensors="pt",
-                            max_length=self.ppo_config.max_seq_length - self.ppo_config.max_new_tokens,
-                            truncation=True
-                        ).to(self.device)
-                        r = self.tokenizer.encode(response_text, return_tensors="pt", truncation=True).to(self.device)
-                        
-                        rollouts["queries"].append(q.squeeze(0))
-                        rollouts["responses"].append(r.squeeze(0))
-                        rollouts["rewards"].append(torch.tensor(score))
-                        rollouts["metadata"].append({"score": score, "success": success})
+                        # Add assistant message to history for next turn
+                        prompt_so_far.append(msg)
+                    else:
+                        # Add non-assistant messages to prompt
+                        prompt_so_far.append(msg)
+                
+                if samples_from_episode > 0:
+                    successful_episodes += 1
+                    self.logger.debug(f"Episode {attempts}: Extracted {samples_from_episode} samples (score={score:.2f})")
+                else:
+                    failed_episodes += 1
+                    self.logger.debug(f"Episode {attempts}: No valid samples extracted")
                 
             except Exception as e:
-                self.logger.warning(f"Episode {i} failed: {e}")
+                self.logger.warning(f"Episode {attempts} failed with exception: {e}")
+                failed_episodes += 1
                 continue
         
-        self.logger.info(f"Collected {len(rollouts['queries'])} samples via affinetes")
+        self.logger.info(
+            f"Collected {len(rollouts['queries'])} samples from {successful_episodes} episodes "
+            f"({failed_episodes} failed, {attempts} total attempts)"
+        )
+        
+        # Warn if we couldn't collect enough samples
+        if len(rollouts["queries"]) < batch_size:
+            self.logger.warning(
+                f"Only collected {len(rollouts['queries'])}/{batch_size} samples. "
+                f"Check: 1) vLLM server running? 2) Docker container healthy? 3) API key set?"
+            )
+        
         return rollouts
     
     async def collect_rollouts_local(self, batch_size: int, step: int = 0) -> Dict:

@@ -19,5 +19,8 @@ wandb>=0.16.0
 # Install from GitHub: pip install git+https://github.com/AffineFoundation/affinetes.git
 affinetes @ git+https://github.com/AffineFoundation/affinetes.git
 
+# vLLM - Fast LLM Inference Server
+vllm>=0.4.0
+
 # Utilities
 numpy>=1.24.0
