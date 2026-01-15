@@ -15,8 +15,9 @@ accelerate>=0.25.0
 # Experiment Tracking
 wandb>=0.16.0
 
-# Game Environment
-open_spiel>=1.4.0
+# affinetes - Container-based Environment Framework
+# Install from GitHub: pip install git+https://github.com/AffineFoundation/affinetes.git
+affinetes @ git+https://github.com/AffineFoundation/affinetes.git
 
 # Utilities
 numpy>=1.24.0
