@@ -1,0 +1,50 @@
+{
+  "model": {
+    "model_name": "Qwen/Qwen3-4B",
+    "use_4bit": true,
+    "bnb_4bit_compute_dtype": "bfloat16",
+    "bnb_4bit_quant_type": "nf4",
+    "use_nested_quant": true
+  },
+  "lora": {
+    "r": 16,
+    "lora_alpha": 32,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ],
+    "lora_dropout": 0.05,
+    "bias": "none"
+  },
+  "ppo": {
+    "batch_size": 8,
+    "mini_batch_size": 2,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 1e-5,
+    "ppo_epochs": 4,
+    "init_kl_coef": 0.2,
+    "target_kl": 6.0,
+    "cliprange": 0.2,
+    "cliprange_value": 0.2,
+    "vf_coef": 0.1,
+    "num_train_steps": 10000,
+    "save_freq": 500,
+    "eval_freq": 100,
+    "log_freq": 10,
+    "max_seq_length": 2048,
+    "max_new_tokens": 8,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "output_dir": "./checkpoints/ppo_lora",
+    "resume_from": null,
+    "use_wandb": true,
+    "wandb_project": "game-ppo-training",
+    "min_valid_samples_per_step": 8,
+    "max_collection_episodes": 500
+  }
+}
