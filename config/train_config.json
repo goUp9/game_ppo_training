@@ -22,11 +22,11 @@
     "bias": "none"
   },
   "ppo": {
-    "batch_size": 8,
-    "mini_batch_size": 2,
+    "batch_size": 4,
+    "mini_batch_size": 1,
     "gradient_accumulation_steps": 4,
     "learning_rate": 1e-5,
-    "ppo_epochs": 4,
+    "ppo_epochs": 2,
     "init_kl_coef": 0.2,
     "target_kl": 6.0,
     "cliprange": 0.2,
@@ -36,7 +36,7 @@
     "save_freq": 500,
     "eval_freq": 100,
     "log_freq": 10,
-    "max_seq_length": 2048,
+    "max_seq_length": 1024,
     "max_new_tokens": 8,
     "temperature": 0.7,
     "top_p": 0.9,
@@ -44,7 +44,7 @@
     "resume_from": null,
     "use_wandb": true,
     "wandb_project": "game-ppo-training",
-    "min_valid_samples_per_step": 8,
+    "min_valid_samples_per_step": 4,
     "max_collection_episodes": 500
   }
 }

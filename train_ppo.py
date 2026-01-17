@@ -216,6 +216,7 @@ class AffinetesEnvironment:
         base_url: str,
         temperature: float = 0.7,
         timeout: int = 600,
+        api_key: str = "dummy-key",  # vLLM doesn't validate API keys
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -228,6 +229,7 @@ class AffinetesEnvironment:
             base_url: LLM API base URL
             temperature: Generation temperature
             timeout: Evaluation timeout in seconds
+            api_key: API key for LLM service (vLLM doesn't validate)
             **kwargs: Additional environment-specific parameters
         
         Returns:
@@ -242,6 +244,7 @@ class AffinetesEnvironment:
             base_url=base_url,
             temperature=temperature,
             timeout=timeout,
+            api_key=api_key,
             _timeout=timeout + 60,  # Proxy timeout
             **kwargs
         )
@@ -326,6 +329,7 @@ class GamePPOTrainer:
         # vLLM server configuration (for remote inference)
         self.use_vllm = self.env_config.get("use_vllm", False)
         self.vllm_base_url = self.env_config.get("vllm_base_url", "http://localhost:8000/v1")
+        self.api_key = self.env_config.get("api_key", "dummy-key")
         
         self._setup()
     
@@ -397,11 +401,12 @@ class GamePPOTrainer:
         )
         self.ref_model.eval()
         
-        # PPO trainer
+        # PPO trainer - batch_size must be >= mini_batch_size * gradient_accumulation_steps
+        # We use mini_batch_size=1 and gradient_accumulation_steps=1 for maximum flexibility
         ppo_cfg = PPOConfig(
-            batch_size=self.ppo_config.batch_size,
+            batch_size=self.ppo_config.mini_batch_size,
             mini_batch_size=self.ppo_config.mini_batch_size,
-            gradient_accumulation_steps=self.ppo_config.gradient_accumulation_steps,
+            gradient_accumulation_steps=1,  # Handle accumulation in our training loop
             learning_rate=self.ppo_config.learning_rate,
             ppo_epochs=self.ppo_config.ppo_epochs,
             init_kl_coef=self.ppo_config.init_kl_coef,
@@ -412,6 +417,7 @@ class GamePPOTrainer:
             log_with="wandb" if self.ppo_config.use_wandb else None,
             use_score_scaling=True,
             use_score_norm=True,
+            ratio_threshold=20.0,  # Increase threshold for early training
         )
         
         self.ppo_trainer = PPOTrainer(
@@ -490,7 +496,8 @@ class GamePPOTrainer:
                     model=self.model_config.model_name,
                     base_url=self.vllm_base_url,
                     temperature=self.ppo_config.temperature,
-                    timeout=self.env_config.get("timeout", 600),
+                    timeout=self.env_config.get("timeout", 180),
+                    api_key=self.api_key,
                     opponent=self.env_config.get("opponent", "random") if self.env_type == "openspiel" else None,
                 )
                 
@@ -538,7 +545,8 @@ class GamePPOTrainer:
                             
                             rollouts["queries"].append(q.squeeze(0))
                             rollouts["responses"].append(r.squeeze(0))
-                            rollouts["rewards"].append(torch.tensor(score))
+                            # Rewards must be float tensors on CPU for PPO trainer
+                            rollouts["rewards"].append(torch.tensor(score, dtype=torch.float32))
                             rollouts["metadata"].append({"score": score, "success": success, "task_id": task_id})
                             samples_from_episode += 1
                         
@@ -605,7 +613,8 @@ class GamePPOTrainer:
                     model=self.model_config.model_name,
                     base_url=self.vllm_base_url if self.use_vllm else "http://localhost:8000/v1",
                     temperature=self.ppo_config.temperature,
-                    timeout=self.env_config.get("timeout", 600),
+                    timeout=self.env_config.get("timeout", 180),
+                    api_key=self.api_key,
                 )
                 
                 score = float(result.get("score", 0.0))
@@ -636,7 +645,7 @@ class GamePPOTrainer:
                         
                         rollouts["queries"].append(q.squeeze(0))
                         rollouts["responses"].append(r.squeeze(0))
-                        rollouts["rewards"].append(torch.tensor(score))
+                        rollouts["rewards"].append(torch.tensor(score, dtype=torch.float32))
                         rollouts["metadata"].append({"score": score, "success": success})
                 
             except Exception as e:
@@ -663,19 +672,31 @@ class GamePPOTrainer:
             return {"mean_reward": 0.0, "mean_score": 0.0, "success_rate": 0.0}
         
         all_stats = []
-        batch_size = self.ppo_config.batch_size
+        mini_batch_size = self.ppo_config.mini_batch_size
         
-        for i in range(0, len(queries), batch_size):
-            end = min(i + batch_size, len(queries))
-            if end - i < batch_size:
+        # Process all samples in mini-batches
+        num_samples = len(queries)
+        
+        for i in range(0, num_samples, mini_batch_size):
+            end = min(i + mini_batch_size, num_samples)
+            actual_batch_size = end - i
+            
+            # Only process complete mini-batches
+            if actual_batch_size < mini_batch_size:
+                self.logger.debug(f"Skipping incomplete batch with {actual_batch_size} samples")
                 continue
             
             batch_q = queries[i:end]
             batch_r = responses[i:end]
             batch_rew = rewards[i:end]
             
-            stats = self.ppo_trainer.step(batch_q, batch_r, batch_rew)
-            all_stats.append(stats)
+            try:
+                stats = self.ppo_trainer.step(batch_q, batch_r, batch_rew)
+                all_stats.append(stats)
+                self.logger.debug(f"PPO step completed for mini-batch {i//mini_batch_size + 1}")
+            except Exception as e:
+                self.logger.warning(f"PPO step failed for mini-batch {i//mini_batch_size + 1}: {e}")
+                continue
         
         if all_stats:
             stats = {}
@@ -689,33 +710,41 @@ class GamePPOTrainer:
         stats["mean_reward"] = torch.mean(torch.stack(rewards)).item() if rewards else 0.0
         stats["mean_score"] = sum(m["score"] for m in rollouts["metadata"]) / len(rollouts["metadata"]) if rollouts["metadata"] else 0.0
         stats["success_rate"] = sum(m["success"] for m in rollouts["metadata"]) / len(rollouts["metadata"]) if rollouts["metadata"] else 0.0
+        stats["num_samples"] = num_samples
         
         return stats
     
     async def train(self):
         """Main training loop"""
         self.logger.info(f"Starting PPO training for {self.env_type}...")
+        self.logger.info(f"Config: batch_size={self.ppo_config.batch_size}, "
+                        f"mini_batch_size={self.ppo_config.mini_batch_size}, "
+                        f"lr={self.ppo_config.learning_rate}")
         
         for step in range(self.start_step, self.ppo_config.num_train_steps):
             self.logger.info(f"Step {step + 1}/{self.ppo_config.num_train_steps}: Collecting rollouts...")
             rollouts = await self.collect_rollouts(self.ppo_config.min_valid_samples_per_step, step + 1)
             
-            if not rollouts["queries"]:
+            num_samples = len(rollouts["queries"])
+            if num_samples == 0:
                 self.logger.warning(f"Step {step + 1}: No samples collected, skipping")
                 continue
             
+            self.logger.info(f"Step {step + 1}: Training on {num_samples} samples...")
             stats = self.train_step(rollouts)
             
-            if (step + 1) % self.ppo_config.log_freq == 0:
-                self.logger.info(
-                    f"Step {step + 1} | Reward: {stats['mean_reward']:.4f} | "
-                    f"Score: {stats['mean_score']:.4f} | Success: {stats['success_rate']:.2%}"
-                )
-                
-                if self.ppo_config.use_wandb:
-                    import wandb
-                    wandb.log(stats, step=step + 1)
+            # Log every step for debugging
+            self.logger.info(
+                f"Step {step + 1} | Samples: {stats.get('num_samples', num_samples)} | "
+                f"Reward: {stats['mean_reward']:.4f} | Score: {stats['mean_score']:.4f} | "
+                f"Success: {stats['success_rate']:.2%}"
+            )
             
+            if self.ppo_config.use_wandb:
+                import wandb
+                wandb.log(stats, step=step + 1)
+            
+            # Remove the duplicate log_freq check since we log every step now
             if (step + 1) % self.ppo_config.save_freq == 0:
                 save_path = Path(self.ppo_config.output_dir) / f"checkpoint-{step + 1}"
                 self.logger.info(f"Saving checkpoint: {save_path}")
@@ -768,7 +797,8 @@ class GamePPOTrainer:
                     model=self.model_config.model_name,
                     base_url=self.vllm_base_url if self.use_vllm else "http://localhost:8000/v1",
                     temperature=0.1,  # Lower temperature for evaluation
-                    timeout=self.env_config.get("timeout", 600),
+                    timeout=self.env_config.get("timeout", 180),
+                    api_key=self.api_key,
                 )
                 
                 score = float(result.get("score", 0.0))

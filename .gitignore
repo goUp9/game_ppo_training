@@ -1,2 +1,5 @@
 venv/
 _pycache_/
+__pycache__/curriculum.cpython-312.pyc
+__pycache__/train_ppo.cpython-312.pyc
+__pycache__/utils.cpython-312.pyc

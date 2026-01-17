@@ -1,10 +1,11 @@
 {
   "env_type": "openspiel",
   "env_mode": "docker",
-  "allowed_game_indices": [0, 1, 2, 3, 4, 5, 6, 7],
+  "allowed_game_indices": [0, 1, 2],
   "opponent": "random",
   "gamma": 0.99,
   "use_vllm": true,
-  "vllm_base_url": "http://localhost:8000/v1",
-  "timeout": 600
+  "vllm_base_url": "http://172.17.0.1:8000/v1",
+  "timeout": 120,
+  "api_key": "dummy-key"
 }
